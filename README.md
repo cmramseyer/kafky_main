@@ -10,13 +10,13 @@ Kafka.
 
 Add the following repositories as direct subdirectories of this repository:
 
-```text
-kafky/
-kafky_kafka/
-kafky_prices/
-kafky_storage/
-kafky_providers/
-```
+| Directory | Repository URL |
+| --- | --- |
+| `kafky/` | `git@github.com:cmramseyer/kafky.git` |
+| `kafky_kafka/` | `git@github.com:cmramseyer/kafky_kafka.git` |
+| `kafky_prices/` | `git@github.com:cmramseyer/kafky_prices.git` |
+| `kafky_storage/` | `git@github.com:cmramseyer/kafky_storage.git` |
+| `kafky_providers/` | `git@github.com:cmramseyer/kafky_providers.git` |
 
 `kafky`, `kafky_prices`, `kafky_storage`, and `kafky_providers` are Rails 8
 applications that use Ruby 3.4.3. Each application has its own local SQLite
