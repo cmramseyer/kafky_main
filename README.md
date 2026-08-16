@@ -45,7 +45,7 @@ responsibilities that communicate through Kafka events:
   reads low-stock alerts from `kafky_storage` and informs it when a supplier
   delivery should increase inventory.
 
-![Kafky application integration](kafka_apps_integration.png)
+![Kafky application integration](kafka_apps_integration.jpg)
 
 This is intentionally a high-level summary. Refer to the integration and
 planning documents in this repository for event contracts, application flows,
