@@ -1,0 +1,205 @@
+# Plan: Integracion de kafky_prices mediante Kafka
+
+## Decision
+
+Se usara comunicacion asincrona mediante eventos Kafka. La app `kafky`
+mantendra una copia local de los productos y sus precios; no consultara a
+`kafky_prices` por HTTP para obtenerlos durante el flujo de venta.
+
+Esto permite que `kafky` siga funcionando aunque `kafky_prices` este
+temporalmente fuera de servicio. Como contrapartida, los precios se actualizan
+de forma eventual y los consumers deben manejar reintentos y eventos duplicados.
+
+## Responsabilidades
+
+`kafky_prices`
+- Es la fuente de verdad para productos y precios.
+- Permite crear productos y modificar sus precios.
+- Guarda sus cambios y los eventos pendientes en una outbox propia.
+- Publica eventos en Kafka.
+
+`kafky`
+- Mantiene una copia local de los productos para mostrar y crear ordenes.
+- Consume los eventos publicados por `kafky_prices`.
+- Crea productos locales o actualiza solamente su precio segun el evento.
+- Publica `order.created` cuando se confirma una orden.
+
+`kafky_storage`
+- Es la fuente de verdad para stock y `reorder_point`.
+- Consume `order.created`, descuenta stock y publica alertas de bajo stock.
+
+`kafky_providers`
+- Es la fuente de verdad para las ordenes de reposicion.
+- Consume alertas de bajo stock y decide cuanto pedir al proveedor.
+
+## Infraestructura Kafka Local
+
+Kafka y Kafka UI son infraestructura compartida por todas las apps. El archivo
+`docker-compose.yml` se extrae desde `kafky/` a `kafky_kafka/` en la raiz de
+este proyecto:
+
+```text
+learn/
+  kafky_kafka/
+    docker-compose.yml
+    README.md
+  kafky/
+  kafky_prices/
+  kafky_storage/
+  kafky_providers/
+  integration.md
+  plan.txt
+  TODO.md
+```
+
+El Compose de `kafky_kafka/` contiene un unico broker Kafka y Kafka UI. Se
+levantara desde esa carpeta con `docker compose up -d` y se detendra con
+`docker compose down`. Sus instrucciones operativas viven en
+`kafky_kafka/README.md`.
+
+Por ahora las apps Rails y los consumers Karafka se ejecutaran directamente en
+la maquina local. Todas se conectaran al broker mediante
+`KAFKA_BOOTSTRAP_SERVERS=localhost:9092`.
+
+No es necesario crear Dockerfiles para `kafky`, `kafky_prices`,
+`kafky_storage` ni `kafky_providers` mientras se ejecuten localmente. El
+Dockerfile actual de `kafky` es el template de produccion generado por Rails y
+solo sera necesario si una app se ejecuta o se despliega como contenedor.
+
+## Eventos Y Topic
+
+Ambos eventos se publican en el topic `catalog.events`:
+
+- `product.created`: informa que existe un producto nuevo, con su precio inicial.
+- `product.price_updated`: informa que cambio el precio de un producto existente.
+
+Ejemplo de `product.created`:
+
+{
+  "event_id": "uuid",
+  "event_type": "product.created",
+  "event_version": 1,
+  "source": "kafky_prices",
+  "occurred_at": "2026-08-04T12:00:00Z",
+  "data": {
+    "sku": "MOUSE-WL-001",
+    "product_desc": "Mouse inalambrico",
+    "prd_price": "25.00",
+    "prd_category": "Electronics"
+  }
+}
+
+Ejemplo de `product.price_updated`:
+
+{
+  "event_id": "uuid",
+  "event_type": "product.price_updated",
+  "event_version": 1,
+  "source": "kafky_prices",
+  "occurred_at": "2026-08-04T12:05:00Z",
+  "data": {
+    "sku": "MOUSE-WL-001",
+    "prd_price": "30.00"
+  }
+}
+
+## Identificacion de Productos
+
+No se usara el `id` interno de Rails para comunicar las aplicaciones, porque
+cada una tendra su propia base de datos. Se agregara un campo `sku` unico a los
+productos de las apps que lo necesiten y se usara para relacionar los eventos
+con el registro local correcto.
+
+El evento `product.created` incluye categoria. `kafky` crea o encuentra la
+categoria local antes de crear o actualizar su proyeccion del producto.
+
+## Flujo De Catalogo
+
+1. En `kafky_prices` se crea un producto con precio.
+2. La app guarda el producto y un evento `product.created` en su outbox.
+3. El publicador envia el evento a `catalog.events`.
+4. `kafky` consume el evento y crea o actualiza su producto local usando el `sku`.
+5. El consumer adapta `product_desc` a `name`, `prd_price` a `price` y crea la categoria local desde `prd_category`.
+6. Cuando cambia un precio, `kafky_prices` publica `product.price_updated`.
+7. `kafky` encuentra el producto por `sku` y actualiza su columna `price` desde `prd_price`.
+
+## Arquitectura De Inventario Y Proveedores
+
+Las responsabilidades de inventario y proveedores se distribuyen de la
+siguiente forma:
+
+```text
+kafky
+  Crea ordenes y publica order.created.
+
+kafky_storage
+  Consume order.created.
+  Descuenta stock.
+  Publica inventory.low_stock cuando corresponde.
+
+kafky_providers
+  Consume inventory.low_stock.
+  Aplica sus reglas y crea una orden de reposicion.
+```
+
+`kafky_storage` define el stock inicial y el umbral de reposicion. Por su
+parte, `kafky_providers` define la cantidad a comprar y la relacion entre un
+`sku` y su proveedor.
+
+Cuando se actualice `available_quantity` en `kafky_storage`, la app guarda
+`inventory.stock_updated` en su outbox y lo publica en
+`inventory.stock.events`. El mensaje incluye `sku` y `available_quantity`.
+`kafky` consume ese topic y actualiza `products.stock` como proyeccion local de
+solo lectura. Un cambio que solo modifique `reorder_point` no publica este evento.
+
+`kafky` publica `order.created` y `kafky_storage` lo consume para descontar
+`available_quantity` por `sku`. Si el descuento es valido, Inventario crea el
+evento existente `inventory.stock_updated` en su outbox. Si el descuento cruza
+`reorder_point` hacia abajo, tambien crea `inventory.low_stock`. Si no hay
+cantidad suficiente, por ahora no descuenta ni publica eventos.
+
+Cuando una orden de reposicion se recibe en `kafky_providers`, la app marca la
+orden como entregada y guarda `inventory.stock_added` en su outbox. El evento se
+publica en `inventory.receipts.events` e incluye `provider_order_id`, `sku` y
+`quantity`. `kafky_storage` consume el evento, suma la cantidad a
+`available_quantity` y crea `inventory.stock_updated` para que `kafky` actualice
+su proyeccion local.
+
+```json
+{
+  "event_type": "inventory.stock_added",
+  "event_version": 1,
+  "source": "kafky_providers",
+  "data": {
+    "provider_order_id": 42,
+    "sku": "MOUSE-WL-001",
+    "quantity": 7
+  }
+}
+```
+
+El evento `order.created` debe incluir `sku` y `quantity`; `kafky_storage` no
+puede usar el `product.id` de `kafky`. El evento `inventory.low_stock` tambien
+debe identificar el producto por `sku`:
+
+```json
+{
+  "event_type": "inventory.low_stock",
+  "event_version": 1,
+  "source": "kafky_storage",
+  "data": {
+    "product": {
+      "sku": "MOUSE-WL-001",
+      "item_desc": "Mouse inalambrico",
+      "available_quantity": 4,
+      "reorder_point": 5
+    }
+  }
+}
+```
+
+## Pendientes
+
+Los pendientes de implementacion y decisiones abiertas se mantienen en
+`TODO.md`. La topologia actual de productores, consumers y topics se documenta
+en `integration.md`.
