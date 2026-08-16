@@ -73,6 +73,13 @@ run_tmux_session() {
         "Kafky Providers Rails :3013" "$SCRIPT_DIR/kafky_providers" "bundle exec rails server -p 3013" \
         "Kafky Providers Karafka" "$SCRIPT_DIR/kafky_providers" "bundle exec karafka server"
       ;;
+    outbox-publishers)
+      start_tmux_session "$session" \
+        "Kafky Outbox" "$SCRIPT_DIR/kafky" "while true; do bundle exec rails outbox:publish; sleep 5; done" \
+        "Kafky Prices Outbox" "$SCRIPT_DIR/kafky_prices" "while true; do bundle exec rails outbox:publish; sleep 5; done" \
+        "Kafky Storage Outbox" "$SCRIPT_DIR/kafky_storage" "while true; do bundle exec rails outbox:publish; sleep 5; done" \
+        "Kafky Providers Outbox" "$SCRIPT_DIR/kafky_providers" "while true; do bundle exec rails outbox:publish; sleep 5; done"
+      ;;
     *)
       fail "sesion tmux desconocida: $session"
       ;;
@@ -98,8 +105,8 @@ check_command bundle
 check_command gnome-terminal
 check_command tmux
 
-# Detiene las sesiones anteriores del script para no duplicar servidores o consumidores.
-for session in kafky-apps support-apps; do
+# Detiene las sesiones anteriores del script para no duplicar procesos.
+for session in kafky-apps support-apps outbox-publishers; do
   if tmux has-session -t "$session" 2>/dev/null; then
     tmux kill-session -t "$session"
   fi
@@ -108,3 +115,4 @@ done
 printf 'Abriendo paneles para las aplicaciones...\n'
 gnome-terminal --title="Kafky y Kafky Prices" -- "$SCRIPT_PATH" --tmux-session kafky-apps
 gnome-terminal --title="Kafky Storage y Providers" -- "$SCRIPT_PATH" --tmux-session support-apps
+gnome-terminal --title="Kafky Outbox Publishers" -- "$SCRIPT_PATH" --tmux-session outbox-publishers

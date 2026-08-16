@@ -7,11 +7,11 @@ command -v tmux >/dev/null 2>&1 || {
   exit 1
 }
 
-for session in kafky-apps support-apps; do
+for session in kafky-apps support-apps outbox-publishers; do
   if tmux has-session -t "$session" 2>/dev/null; then
     printf 'Deteniendo la sesion %s...\n' "$session"
     tmux kill-session -t "$session"
   fi
 done
 
-printf 'Las aplicaciones Rails y Karafka fueron detenidas.\n'
+printf 'Las aplicaciones Rails, Karafka y los publicadores outbox fueron detenidos.\n'
